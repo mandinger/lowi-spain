@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "Correo electrónico",
+          "password": "Contraseña"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reautenticar Lowi",
+        "description": "Es necesario actualizar la contraseña de {email}.",
+        "data": {
+          "password": "Contraseña"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Correo electrónico o contraseña incorrectos.",
+      "cannot_connect": "No se ha podido conectar con Lowi.",
+      "waf_challenge": "El sitio de Lowi está bloqueando temporalmente el acceso automatizado. Espera unos minutos e inténtalo de nuevo.",
+      "unknown": "Se ha producido un error inesperado."
+    },
+    "abort": {
+      "already_configured": "Esta cuenta de Lowi ya está configurada.",
+      "reauth_successful": "La reautenticación se ha realizado correctamente."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "remaining_data": {
+        "name": "Datos restantes"
+      },
+      "total_data": {
+        "name": "Datos totales"
+      },
+      "tariff_data_included": {
+        "name": "Datos incluidos en la tarifa"
+      },
+      "bonus_data": {
+        "name": "Datos de bonos"
+      },
+      "accumulated_data": {
+        "name": "Datos acumulados"
+      },
+      "shared_data_received": {
+        "name": "Datos compartidos recibidos"
+      },
+      "cost_current_month": {
+        "name": "Coste de este mes"
+      }
+    }
+  }
+}

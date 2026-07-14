@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Lowi",
+        "description": "The password for {email} needs to be updated.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Unable to connect to Lowi.",
+      "waf_challenge": "Lowi's site is temporarily blocking automated access. Wait a few minutes and try again.",
+      "unknown": "Unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This Lowi account is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "remaining_data": {
+        "name": "Remaining data"
+      },
+      "total_data": {
+        "name": "Total data allowance"
+      },
+      "tariff_data_included": {
+        "name": "Tariff included data"
+      },
+      "bonus_data": {
+        "name": "Bonus data"
+      },
+      "accumulated_data": {
+        "name": "Accumulated data"
+      },
+      "shared_data_received": {
+        "name": "Shared data received"
+      },
+      "cost_current_month": {
+        "name": "Cost this month"
+      }
+    }
+  }
+}

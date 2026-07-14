@@ -1,0 +1,25 @@
+# artifacts
+__pycache__
+.pytest*
+*.egg-info
+*/build/*
+*/dist/*
+
+# misc
+.coverage
+.vscode
+coverage.xml
+.ruff_cache
+.venv
+
+# Home Assistant configuration
+config/*
+!config/configuration.yaml
+
+# Reference material only - not part of the integration, never commit
+lowi-api-0.1.0/
+
+# Anything captured from a browser session (HAR/cURL exports) may contain
+# session cookies or tokens - never commit these
+*.har
+/.claude
