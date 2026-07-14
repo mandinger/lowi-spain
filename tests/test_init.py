@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_EMAIL
+from homeassistant.const import CONF_USERNAME
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lowi.api import (
@@ -15,7 +15,7 @@ from custom_components.lowi.api import (
 )
 from custom_components.lowi.const import DOMAIN
 
-from .const import ACCOUNT_ID_SINGLE, MOCK_CONFIG, MSISDN_SINGLE
+from .const import ACCOUNT_ID_PRIMARY, MOCK_CONFIG, MSISDN_PRIMARY
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -28,7 +28,7 @@ _GET_ALL_SUMMARIES_TARGET = (
 def _make_entry() -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
-        unique_id=MOCK_CONFIG[CONF_EMAIL].lower(),
+        unique_id=MOCK_CONFIG[CONF_USERNAME],
         data=MOCK_CONFIG,
     )
 
@@ -41,7 +41,10 @@ async def test_setup_and_unload_entry(hass: HomeAssistant) -> None:
     with patch(
         _GET_ALL_SUMMARIES_TARGET,
         return_value=[
-            LowiSubscriptionSummary(msisdn=MSISDN_SINGLE, account_id=ACCOUNT_ID_SINGLE),
+            LowiSubscriptionSummary(
+                msisdn=MSISDN_PRIMARY,
+                account_id=ACCOUNT_ID_PRIMARY,
+            ),
         ],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -49,7 +52,7 @@ async def test_setup_and_unload_entry(hass: HomeAssistant) -> None:
 
         assert entry.state is ConfigEntryState.LOADED
         assert entry.runtime_data is not None
-        assert MSISDN_SINGLE in entry.runtime_data.coordinator.data
+        assert MSISDN_PRIMARY in entry.runtime_data.coordinator.data
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()

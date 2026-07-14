@@ -2,21 +2,30 @@
   "config": {
     "step": {
       "user": {
+        "title": "Log in to Lowi",
         "data": {
-          "email": "Email",
+          "username": "NIF/DNI",
           "password": "Password"
+        }
+      },
+      "otp": {
+        "title": "Verification code",
+        "description": "Enter the code Lowi sent by SMS.",
+        "data": {
+          "code": "Code"
         }
       },
       "reauth_confirm": {
         "title": "Reauthenticate Lowi",
-        "description": "The password for {email} needs to be updated.",
+        "description": "The password for {username} needs to be updated.",
         "data": {
           "password": "Password"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password.",
+      "invalid_auth": "Invalid NIF/DNI or password.",
+      "invalid_otp": "Invalid verification code.",
       "cannot_connect": "Unable to connect to Lowi.",
       "waf_challenge": "Lowi's site is temporarily blocking automated access. Wait a few minutes and try again.",
       "unknown": "Unexpected error occurred."

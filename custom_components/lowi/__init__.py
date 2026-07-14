@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
 
 from .api import LowiApiClient
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
+from .const import CONF_COOKIES, DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
 from .coordinator import LowiDataUpdateCoordinator
 from .data import LowiData
 
@@ -34,12 +34,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LowiConfigEntry) -> bool
         name=DOMAIN,
         update_interval=DEFAULT_SCAN_INTERVAL,
     )
+    client = LowiApiClient(
+        username=entry.data[CONF_USERNAME],
+        password=entry.data[CONF_PASSWORD],
+        session=async_get_clientsession(hass),
+    )
+    # Restores the session established during the config flow's NIF+password+
+    # SMS-code login, so a restart doesn't force the user through that dance
+    # again unless the session has actually expired (see api.py).
+    client.import_cookies(entry.data.get(CONF_COOKIES, {}))
+
     entry.runtime_data = LowiData(
-        client=LowiApiClient(
-            email=entry.data[CONF_EMAIL],
-            password=entry.data[CONF_PASSWORD],
-            session=async_get_clientsession(hass),
-        ),
+        client=client,
         integration=async_get_loaded_integration(hass, entry.domain),
         coordinator=coordinator,
     )

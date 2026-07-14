@@ -17,7 +17,7 @@ from custom_components.lowi.const import DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
 from custom_components.lowi.coordinator import LowiDataUpdateCoordinator
 from custom_components.lowi.data import LowiData
 
-from .const import ACCOUNT_ID_SINGLE, MOCK_CONFIG, MSISDN_SINGLE
+from .const import ACCOUNT_ID_PRIMARY, MOCK_CONFIG, MSISDN_PRIMARY
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -56,8 +56,8 @@ async def test_successful_update(hass: HomeAssistant) -> None:
     client = AsyncMock()
     client.async_get_all_summaries.return_value = [
         LowiSubscriptionSummary(
-            msisdn=MSISDN_SINGLE,
-            account_id=ACCOUNT_ID_SINGLE,
+            msisdn=MSISDN_PRIMARY,
+            account_id=ACCOUNT_ID_PRIMARY,
             cost_current_month=12.34,
         ),
     ]
@@ -66,8 +66,8 @@ async def test_successful_update(hass: HomeAssistant) -> None:
     await coordinator.async_refresh()
 
     assert coordinator.last_update_success is True
-    assert MSISDN_SINGLE in coordinator.data
-    assert coordinator.data[MSISDN_SINGLE].cost_current_month == 12.34
+    assert MSISDN_PRIMARY in coordinator.data
+    assert coordinator.data[MSISDN_PRIMARY].cost_current_month == 12.34
 
 
 async def test_auth_failure_triggers_reauth(hass: HomeAssistant) -> None:

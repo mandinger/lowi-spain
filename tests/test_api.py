@@ -4,31 +4,32 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import aiohttp
 import pytest
+from yarl import URL
 
 from custom_components.lowi.api import (
     API_BASE_URL,
+    PORTAL_BASE_URL,
     LowiApiAuthenticationError,
     LowiApiClient,
     LowiApiCommunicationError,
     LowiApiWafChallengeError,
-    LowiSubscriptionSummary,
-    LowiUser,
-    _bytes_to_mb,
 )
 
 from .const import (
-    ACCOUNT_ID_SINGLE,
-    MOCK_LOGIN_FAILURE_RESPONSE,
-    MOCK_LOGIN_RESPONSE,
-    MOCK_LOGIN_RESPONSE_MULTI,
-    MOCK_SUMMARY_RESPONSE,
-    MSISDN_SECOND,
-    MSISDN_SINGLE,
+    ACCOUNT_ID_PRIMARY,
+    INTERNET_ACCOUNT_ID,
+    LOGIN_ERROR_HTML,
+    MOCK_SUBSCRIPTIONS_RESPONSE,
+    MSISDN_PRIMARY,
+    MSISDN_SECONDARY,
     WAF_CHALLENGE_BODY,
+    login_page_html,
+    otp_form_html,
+    phone_select_html,
 )
 
 if TYPE_CHECKING:
@@ -36,108 +37,146 @@ if TYPE_CHECKING:
         AiohttpClientMocker,
     )
 
+_ENTRY_URL = f"{PORTAL_BASE_URL}/oauth/"
+_LOGIN_ACTION_URL = f"{PORTAL_BASE_URL}/login-step"
+_PHONE_ACTION_URL = f"{PORTAL_BASE_URL}/phone-step"
+_OTP_ACTION_URL = f"{PORTAL_BASE_URL}/otp-step"
+
 
 def _client_from_mocker(
     aioclient_mock: AiohttpClientMocker,
 ) -> tuple[LowiApiClient, aiohttp.ClientSession]:
     session = aioclient_mock.create_session(asyncio.get_running_loop())
-    client = LowiApiClient("test@example.com", "test-password", session)
+    client = LowiApiClient("12345678A", "test-password", session)
     return client, session
 
 
-def test_bytes_to_mb() -> None:
-    """None passes through unchanged; byte values convert to MB."""
-    assert _bytes_to_mb(None) is None
-    assert _bytes_to_mb(209715200) == pytest.approx(200.0)
+def _register_happy_path_login(aioclient_mock: AiohttpClientMocker) -> None:
+    aioclient_mock.get(_ENTRY_URL, text=login_page_html(_LOGIN_ACTION_URL))
+    aioclient_mock.post(
+        _LOGIN_ACTION_URL,
+        text=phone_select_html(_PHONE_ACTION_URL, ACCOUNT_ID_PRIMARY),
+    )
+    aioclient_mock.post(_PHONE_ACTION_URL, text=otp_form_html(_OTP_ACTION_URL))
 
 
-async def test_login_success(aioclient_mock: AiohttpClientMocker) -> None:
-    """A successful login stores the token and returns the parsed user."""
-    aioclient_mock.post(f"{API_BASE_URL}login", json=MOCK_LOGIN_RESPONSE)
+async def test_start_login_success(aioclient_mock: AiohttpClientMocker) -> None:
+    """A successful credentials step reaches the OTP form and stores its action."""
+    _register_happy_path_login(aioclient_mock)
     client, session = _client_from_mocker(aioclient_mock)
     try:
-        user = await client.async_login()
+        await client.async_start_login()
     finally:
         await session.close()
 
-    assert user.name == "Test"
-    assert len(user.subscriptions) == 1
-    assert user.subscriptions[0].msisdn == MSISDN_SINGLE
-    assert user.subscriptions[0].account_id == ACCOUNT_ID_SINGLE
-    assert client._token == "mock-token"
+    assert client._otp_action_url == _OTP_ACTION_URL
 
 
-async def test_login_invalid_credentials(aioclient_mock: AiohttpClientMocker) -> None:
-    """A resultCode != 0 on login is surfaced as an authentication error."""
-    aioclient_mock.post(f"{API_BASE_URL}login", json=MOCK_LOGIN_FAILURE_RESPONSE)
-    client, session = _client_from_mocker(aioclient_mock)
-    try:
-        with pytest.raises(LowiApiAuthenticationError):
-            await client.async_login()
-    finally:
-        await session.close()
-
-
-async def test_login_http_401(aioclient_mock: AiohttpClientMocker) -> None:
-    """An HTTP 401 on login is surfaced as an authentication error."""
-    aioclient_mock.post(f"{API_BASE_URL}login", status=401, json={})
-    client, session = _client_from_mocker(aioclient_mock)
-    try:
-        with pytest.raises(LowiApiAuthenticationError):
-            await client.async_login()
-    finally:
-        await session.close()
-
-
-async def test_get_subscription_summary(aioclient_mock: AiohttpClientMocker) -> None:
-    """A summary response is normalized, including bytes -> MB conversion."""
-    aioclient_mock.post(f"{API_BASE_URL}login", json=MOCK_LOGIN_RESPONSE)
-    aioclient_mock.get(f"{API_BASE_URL}home_summary", json=MOCK_SUMMARY_RESPONSE)
-    client, session = _client_from_mocker(aioclient_mock)
-    try:
-        await client.async_login()
-        summary = await client.async_get_subscription_summary(ACCOUNT_ID_SINGLE)
-    finally:
-        await session.close()
-
-    assert summary.msisdn == MSISDN_SINGLE
-    assert summary.cost_current_month == 12.34
-    assert summary.tariff_data_included_mb == 5000
-    assert summary.bonus_data_mb == 1000
-    assert summary.accumulated_data_mb == pytest.approx(200.0)
-    assert summary.remaining_data_mb == 4200
-    assert summary.total_data_mb == 6000
-
-
-async def test_get_all_summaries_multi_subscription(
+async def test_start_login_invalid_credentials(
     aioclient_mock: AiohttpClientMocker,
 ) -> None:
-    """All subscriptions on the account are fetched and keyed correctly."""
-    aioclient_mock.post(f"{API_BASE_URL}login", json=MOCK_LOGIN_RESPONSE_MULTI)
-    aioclient_mock.get(f"{API_BASE_URL}home_summary", json=MOCK_SUMMARY_RESPONSE)
+    """Wrong credentials on the first Keycloak step raise an auth error."""
+    aioclient_mock.get(_ENTRY_URL, text=login_page_html(_LOGIN_ACTION_URL))
+    aioclient_mock.post(_LOGIN_ACTION_URL, text=LOGIN_ERROR_HTML)
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        with pytest.raises(LowiApiAuthenticationError):
+            await client.async_start_login()
+    finally:
+        await session.close()
+
+
+async def test_submit_otp_success_returns_parsed_summaries(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A correct OTP completes login and returns parsed mobile-line summaries."""
+    _register_happy_path_login(aioclient_mock)
+    aioclient_mock.post(_OTP_ACTION_URL, text="<html>ok</html>")
+    aioclient_mock.get(
+        f"{API_BASE_URL}me/subscriptions",
+        json=MOCK_SUBSCRIPTIONS_RESPONSE,
+    )
+
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        await client.async_start_login()
+        summaries = await client.async_submit_otp("654321")
+    finally:
+        await session.close()
+
+    msisdns = {summary.msisdn for summary in summaries}
+    assert msisdns == {MSISDN_PRIMARY, MSISDN_SECONDARY}
+    assert all(summary.account_id != INTERNET_ACCOUNT_ID for summary in summaries)
+
+
+async def test_submit_otp_invalid_code(aioclient_mock: AiohttpClientMocker) -> None:
+    """An incorrect SMS code raises an auth error."""
+    _register_happy_path_login(aioclient_mock)
+    aioclient_mock.post(
+        _OTP_ACTION_URL,
+        text='<html><body><span class="kc-feedback-text">Bad code</span></body></html>',
+    )
+
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        await client.async_start_login()
+        with pytest.raises(LowiApiAuthenticationError):
+            await client.async_submit_otp("000000")
+    finally:
+        await session.close()
+
+
+async def test_get_all_summaries_parsing(aioclient_mock: AiohttpClientMocker) -> None:
+    """Contracted tariff/bonus figures are parsed with GB->MB conversion."""
+    aioclient_mock.get(
+        f"{API_BASE_URL}me/subscriptions",
+        json=MOCK_SUBSCRIPTIONS_RESPONSE,
+    )
     client, session = _client_from_mocker(aioclient_mock)
     try:
         summaries = await client.async_get_all_summaries()
     finally:
         await session.close()
 
-    assert {summary.msisdn for summary in summaries} == {
-        MSISDN_SINGLE,
-        MSISDN_SECOND,
-    }
+    primary = next(s for s in summaries if s.msisdn == MSISDN_PRIMARY)
+    assert primary.tariff_data_included_mb == 150 * 1024
+    assert primary.bonus_data_mb == 51200.0
+
+    secondary = next(s for s in summaries if s.msisdn == MSISDN_SECONDARY)
+    assert secondary.tariff_data_included_mb == 5 * 1024
+    assert secondary.bonus_data_mb is None
 
 
-async def test_waf_challenge_detected(aioclient_mock: AiohttpClientMocker) -> None:
-    """An Incapsula challenge page is surfaced as a distinct WAF error."""
-    aioclient_mock.post(
-        f"{API_BASE_URL}login",
+async def test_waf_challenge_detected_on_api_call(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """An Incapsula challenge page on the API is surfaced as a distinct error."""
+    aioclient_mock.get(
+        f"{API_BASE_URL}me/subscriptions",
         text=WAF_CHALLENGE_BODY,
         headers={"X-Iinfo": "1-2-3", "Content-Type": "text/html"},
     )
     client, session = _client_from_mocker(aioclient_mock)
     try:
         with pytest.raises(LowiApiWafChallengeError):
-            await client.async_login()
+            await client.async_get_all_summaries()
+    finally:
+        await session.close()
+
+
+async def test_expired_session_surfaces_as_auth_error(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A non-JSON response (redirected to the login page) means auth failed."""
+    aioclient_mock.get(
+        f"{API_BASE_URL}me/subscriptions",
+        text="<html>please log in</html>",
+        headers={"Content-Type": "text/html"},
+    )
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        with pytest.raises(LowiApiAuthenticationError):
+            await client.async_get_all_summaries()
     finally:
         await session.close()
 
@@ -145,7 +184,7 @@ async def test_waf_challenge_detected(aioclient_mock: AiohttpClientMocker) -> No
 async def test_communication_error_on_transport_failure() -> None:
     """A transport-level failure is surfaced as a communication error."""
     session = aiohttp.ClientSession()
-    client = LowiApiClient("test@example.com", "test-password", session)
+    client = LowiApiClient("12345678A", "test-password", session)
     try:
         with (
             patch.object(
@@ -155,40 +194,30 @@ async def test_communication_error_on_transport_failure() -> None:
             ),
             pytest.raises(LowiApiCommunicationError),
         ):
-            await client.async_login()
+            await client.async_get_all_summaries()
     finally:
         await session.close()
 
 
-async def test_retry_once_on_expired_token(
-    aioclient_mock: AiohttpClientMocker,
-) -> None:
-    """A 401 on an authenticated call triggers exactly one re-login retry."""
-    client, session = _client_from_mocker(aioclient_mock)
-    client._token = "stale-token"
-    client._subscriptions = [
-        LowiSubscriptionSummary(msisdn=MSISDN_SINGLE, account_id=ACCOUNT_ID_SINGLE),
-    ]
-
-    login_mock = AsyncMock(
-        return_value=LowiUser(name="Test", first_last_name="User", subscriptions=[]),
-    )
-    request_mock = AsyncMock(
-        side_effect=[
-            LowiApiAuthenticationError("expired"),
-            {"result": {"resultCode": 0}, "data": MOCK_SUMMARY_RESPONSE["data"]},
-        ],
-    )
-
+async def test_export_import_cookies_roundtrip() -> None:
+    """Cookies exported from one client can restore a session on another."""
+    session = aiohttp.ClientSession()
     try:
-        with (
-            patch.object(client, "_async_request", request_mock),
-            patch.object(client, "async_login", login_mock),
-        ):
-            summary = await client.async_get_subscription_summary(ACCOUNT_ID_SINGLE)
+        client = LowiApiClient("12345678A", "test-password", session)
+        session.cookie_jar.update_cookies(
+            {"sessionid": "abc123"},
+            response_url=URL(PORTAL_BASE_URL),
+        )
+
+        cookies = client.export_cookies()
+        assert cookies.get("sessionid") == "abc123"
+
+        fresh_session = aiohttp.ClientSession()
+        try:
+            fresh_client = LowiApiClient("12345678A", "test-password", fresh_session)
+            fresh_client.import_cookies(cookies)
+            assert fresh_client.export_cookies().get("sessionid") == "abc123"
+        finally:
+            await fresh_session.close()
     finally:
         await session.close()
-
-    login_mock.assert_awaited_once()
-    assert request_mock.await_count == 2
-    assert summary.msisdn == MSISDN_SINGLE

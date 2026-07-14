@@ -22,17 +22,19 @@ Copy `custom_components/lowi` into your Home Assistant `config/custom_components
 
 ## Configuration
 
-Configuration is done via the UI: **Settings → Devices & Services → Add Integration → Lowi**. You'll be asked for the email and password you use to log into [lowi.es](https://www.lowi.es).
+Configuration is done via the UI: **Settings → Devices & Services → Add Integration → Lowi**. You'll be asked for your **NIF/DNI** and password, then for the **SMS verification code** Lowi sends to your phone — the same two-step login lowi.es itself uses.
 
-Each phone line (MSISDN) on your account becomes its own device, with sensors for:
+Each mobile phone line on your account becomes its own device, with sensors for:
 
-- Remaining data
-- Total data allowance
 - Tariff-included data
 - Bonus/extra data
-- Accumulated data from the previous cycle
-- Shared data received
-- Cost this month
+- Remaining data *(not yet available — see [CONTRIBUTING.md](CONTRIBUTING.md))*
+- Total data allowance *(not yet available)*
+- Accumulated data from the previous cycle *(not yet available)*
+- Shared data received *(not yet available)*
+- Cost this month *(not yet available)*
+
+Only the contracted-tariff figures are populated today; the live usage/cost sensors will read as unavailable until the consumption endpoint is identified (help wanted, see CONTRIBUTING.md).
 
 Data is refreshed every 6 hours. This interval is intentionally conservative — see [CONTRIBUTING.md](CONTRIBUTING.md) for why.
 

@@ -1,88 +1,159 @@
 """
 Shared test fixtures/constants for lowi tests.
 
-These mock payloads are shaped after the old, dead lowi-api npm package (see
-CONTRIBUTING.md) since that's the only reference we have for what Lowi's API
-used to look like. They are placeholders: once a real browser capture of the
-live lowi.es API is available, replace these with real (redacted) payloads.
+The subscriptions response shape below mirrors a real captured payload from
+`GET /api/2.0/me/subscriptions` (see CONTRIBUTING.md), with fake msisdns and
+subscription ids substituted for the real account's. The Keycloak login-flow
+HTML fixtures are best-effort reconstructions of a real captured multi-step
+login (also see CONTRIBUTING.md) - the exact page structure/field names are
+still unverified against a live re-test.
 """
 
 from __future__ import annotations
 
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
 MOCK_CONFIG = {
-    CONF_EMAIL: "test@example.com",
+    CONF_USERNAME: "12345678A",
     CONF_PASSWORD: "test-password",
 }
 
-MSISDN_SINGLE = "600111222"
-ACCOUNT_ID_SINGLE = "1111"
+MSISDN_PRIMARY = "600111222"
+ACCOUNT_ID_PRIMARY = "7192706"
+MSISDN_SECONDARY = "600333444"
+ACCOUNT_ID_SECONDARY = "7192704"
+INTERNET_ACCOUNT_ID = "9220989"
 
-MSISDN_SECOND = "600333444"
-ACCOUNT_ID_SECOND = "2222"
-
-MOCK_LOGIN_RESPONSE = {
-    "result": {"resultCode": 0},
-    "data": {
-        "auth_token": "mock-token",
-        "user": {
-            "name": "Test",
-            "first_last_name": "User",
-            "accounts": [
+# Real, confirmed shape: a flat `{"data": [...]}` list of packages, each with
+# one or more `subscriptions` (INTERNET/MOBILE/TV). Only MOBILE entries have
+# a non-empty msisdn and are kept by api.py's parsing.
+MOCK_SUBSCRIPTIONS_RESPONSE = {
+    "data": [
+        {
+            "package_id": 706,
+            "name": "150GB/Unlimited + Fibra 600Mbps",
+            "subscriptions": [
                 {
-                    "id": ACCOUNT_ID_SINGLE,
-                    "subscriptions": [{"msisdn": MSISDN_SINGLE}],
+                    "status": "ACTIVE",
+                    "type": "INTERNET",
+                    "msisdn": "",
+                    "id": INTERNET_ACCOUNT_ID,
+                    "addons": [],
+                    "product": {
+                        "product_items": [
+                            {
+                                "name": "Fibra 600 MB",
+                                "type": "BROADBAND",
+                                "quantity": 600,
+                                "unit": "MB",
+                            },
+                        ],
+                    },
+                },
+                {
+                    "status": "ACTIVE",
+                    "type": "MOBILE",
+                    "msisdn": MSISDN_PRIMARY,
+                    "id": ACCOUNT_ID_PRIMARY,
+                    "addons": [
+                        {
+                            "type": "BOND_DATA",
+                            "unit": "MB",
+                            "current_limit": 51200.0,
+                            "initial_limit": 51200.0,
+                        },
+                    ],
+                    "product": {
+                        "product_items": [
+                            {
+                                "name": "Movil 150 GB",
+                                "type": "DATA",
+                                "quantity": 150,
+                                "unit": "GB",
+                            },
+                            {
+                                "name": "Llamadas Ilimitadas",
+                                "type": "VOICE",
+                                "quantity": 3600000,
+                                "unit": "SECONDS",
+                            },
+                        ],
+                    },
                 },
             ],
         },
-    },
-}
-
-MOCK_LOGIN_RESPONSE_MULTI = {
-    "result": {"resultCode": 0},
-    "data": {
-        "auth_token": "mock-token",
-        "user": {
-            "name": "Test",
-            "first_last_name": "User",
-            "accounts": [
+        {
+            "package_id": 214,
+            "name": "5GB/Unlimited - Linea Adicional",
+            "subscriptions": [
                 {
-                    "id": ACCOUNT_ID_SINGLE,
-                    "subscriptions": [{"msisdn": MSISDN_SINGLE}],
-                },
-                {
-                    "id": ACCOUNT_ID_SECOND,
-                    "subscriptions": [{"msisdn": MSISDN_SECOND}],
+                    "status": "ACTIVE",
+                    "type": "MOBILE",
+                    "msisdn": MSISDN_SECONDARY,
+                    "id": ACCOUNT_ID_SECONDARY,
+                    "addons": [],
+                    "product": {
+                        "product_items": [
+                            {
+                                "name": "Movil 5 GB",
+                                "type": "DATA",
+                                "quantity": 5,
+                                "unit": "GB",
+                            },
+                        ],
+                    },
                 },
             ],
         },
-    },
+    ],
 }
 
-MOCK_LOGIN_FAILURE_RESPONSE = {
-    "result": {"resultCode": 1, "resultDescription": "Invalid credentials"},
-}
+_LOGIN_PAGE_HTML = """
+<html><body>
+<form id="kc-form-login" action="{action}" method="post">
+<input type="text" name="username"/>
+<input type="password" name="password"/>
+</form>
+</body></html>
+"""
 
-# acumulative_data below is in bytes (209715200 == 200 MiB), unlike its
-# MB-valued siblings - this mirrors the historical unit mixup api.py guards
-# against (see api.py's _bytes_to_mb).
-MOCK_SUMMARY_RESPONSE = {
-    "result": {"resultCode": 0},
-    "data": {
-        "cost_current_month": 12.34,
-        "current_tariff_data_included": 5000,
-        "bonds_data": 1000,
-        "acumulative_data": 209715200,
-        "shared_data_received": 0,
-        "graph_remaining_data": 4200,
-        "graph_total_data": 6000,
-    },
-}
+_PHONE_SELECT_HTML = """
+<html><body>
+<form action="{action}" method="post">
+<input type="radio" name="selectedPhone" value="{phone_id}"/>
+<button type="submit" name="next" value="Enviar codigo">Enviar</button>
+</form>
+</body></html>
+"""
 
-MOCK_SUMMARY_FAILURE_RESPONSE = {
-    "result": {"resultCode": 1, "resultDescription": "Unknown subscription"},
-}
+_OTP_FORM_HTML = """
+<html><body>
+<form action="{action}" method="post">
+<input type="text" name="code"/>
+</form>
+</body></html>
+"""
+
+LOGIN_ERROR_HTML = (
+    '<html><body><span class="kc-feedback-text">'
+    "Invalid credentials</span></body></html>"
+)
+
+
+def login_page_html(action: str) -> str:
+    """Render the (best-effort) initial Keycloak login form."""
+    return _LOGIN_PAGE_HTML.format(action=action)
+
+
+def phone_select_html(action: str, phone_id: str) -> str:
+    """Render the (best-effort) phone-selection form for the SMS code."""
+    return _PHONE_SELECT_HTML.format(action=action, phone_id=phone_id)
+
+
+def otp_form_html(action: str) -> str:
+    """Render the (best-effort) SMS one-time-code entry form."""
+    return _OTP_FORM_HTML.format(action=action)
+
 
 WAF_CHALLENGE_BODY = (
     "<html><body>Request unsuccessful. Incapsula incident ID: "
