@@ -9,19 +9,21 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_USERNAME
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.lowi.api import (
+from custom_components.lowi_spain.api import (
+    LowiAccountData,
+    LowiAccountSummary,
     LowiApiCommunicationError,
     LowiSubscriptionSummary,
 )
-from custom_components.lowi.const import DOMAIN
+from custom_components.lowi_spain.const import DOMAIN
 
 from .const import ACCOUNT_ID_PRIMARY, MOCK_CONFIG, MSISDN_PRIMARY
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-_GET_ALL_SUMMARIES_TARGET = (
-    "custom_components.lowi.api.LowiApiClient.async_get_all_summaries"
+_GET_ACCOUNT_DATA_TARGET = (
+    "custom_components.lowi_spain.api.LowiApiClient.async_get_account_data"
 )
 
 
@@ -39,20 +41,23 @@ async def test_setup_and_unload_entry(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     with patch(
-        _GET_ALL_SUMMARIES_TARGET,
-        return_value=[
-            LowiSubscriptionSummary(
-                msisdn=MSISDN_PRIMARY,
-                account_id=ACCOUNT_ID_PRIMARY,
-            ),
-        ],
+        _GET_ACCOUNT_DATA_TARGET,
+        return_value=LowiAccountData(
+            account=LowiAccountSummary(),
+            lines={
+                MSISDN_PRIMARY: LowiSubscriptionSummary(
+                    msisdn=MSISDN_PRIMARY,
+                    subscription_id=ACCOUNT_ID_PRIMARY,
+                ),
+            },
+        ),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
         assert entry.state is ConfigEntryState.LOADED
         assert entry.runtime_data is not None
-        assert MSISDN_PRIMARY in entry.runtime_data.coordinator.data
+        assert MSISDN_PRIMARY in entry.runtime_data.coordinator.data.lines
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
@@ -66,7 +71,7 @@ async def test_setup_entry_retries_on_communication_error(hass: HomeAssistant) -
     entry.add_to_hass(hass)
 
     with patch(
-        _GET_ALL_SUMMARIES_TARGET,
+        _GET_ACCOUNT_DATA_TARGET,
         side_effect=LowiApiCommunicationError("down"),
     ):
         assert not await hass.config_entries.async_setup(entry.entry_id)

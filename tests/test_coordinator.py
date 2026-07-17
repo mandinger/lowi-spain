@@ -7,15 +7,17 @@ from unittest.mock import AsyncMock
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.lowi.api import (
+from custom_components.lowi_spain.api import (
+    LowiAccountData,
+    LowiAccountSummary,
     LowiApiAuthenticationError,
     LowiApiCommunicationError,
     LowiApiWafChallengeError,
     LowiSubscriptionSummary,
 )
-from custom_components.lowi.const import DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
-from custom_components.lowi.coordinator import LowiDataUpdateCoordinator
-from custom_components.lowi.data import LowiData
+from custom_components.lowi_spain.const import DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
+from custom_components.lowi_spain.coordinator import LowiDataUpdateCoordinator
+from custom_components.lowi_spain.data import LowiData
 
 from .const import ACCOUNT_ID_PRIMARY, MOCK_CONFIG, MSISDN_PRIMARY
 
@@ -52,28 +54,32 @@ def _reauth_flows_for_entry(hass: HomeAssistant) -> list[dict]:
 
 
 async def test_successful_update(hass: HomeAssistant) -> None:
-    """A successful fetch is keyed by msisdn in coordinator.data."""
+    """A successful fetch stores the account data returned by the client."""
     client = AsyncMock()
-    client.async_get_all_summaries.return_value = [
-        LowiSubscriptionSummary(
-            msisdn=MSISDN_PRIMARY,
-            account_id=ACCOUNT_ID_PRIMARY,
-            cost_current_month=12.34,
-        ),
-    ]
+    account_data = LowiAccountData(
+        account=LowiAccountSummary(current_month_cost=12.34),
+        lines={
+            MSISDN_PRIMARY: LowiSubscriptionSummary(
+                msisdn=MSISDN_PRIMARY,
+                subscription_id=ACCOUNT_ID_PRIMARY,
+            ),
+        },
+    )
+    client.async_get_account_data.return_value = account_data
     coordinator = await _make_coordinator(hass, client)
 
     await coordinator.async_refresh()
 
     assert coordinator.last_update_success is True
-    assert MSISDN_PRIMARY in coordinator.data
-    assert coordinator.data[MSISDN_PRIMARY].cost_current_month == 12.34
+    assert coordinator.data is account_data
+    assert MSISDN_PRIMARY in coordinator.data.lines
+    assert coordinator.data.account.current_month_cost == 12.34
 
 
 async def test_auth_failure_triggers_reauth(hass: HomeAssistant) -> None:
     """An authentication error triggers Home Assistant's reauth flow."""
     client = AsyncMock()
-    client.async_get_all_summaries.side_effect = LowiApiAuthenticationError("bad creds")
+    client.async_get_account_data.side_effect = LowiApiAuthenticationError("bad creds")
     coordinator = await _make_coordinator(hass, client)
 
     await coordinator.async_refresh()
@@ -93,7 +99,7 @@ async def test_waf_challenge_does_not_trigger_reauth(hass: HomeAssistant) -> Non
     suspicion (see api.py's LowiApiWafChallengeError docstring).
     """
     client = AsyncMock()
-    client.async_get_all_summaries.side_effect = LowiApiWafChallengeError("blocked")
+    client.async_get_account_data.side_effect = LowiApiWafChallengeError("blocked")
     coordinator = await _make_coordinator(hass, client)
 
     await coordinator.async_refresh()
@@ -106,7 +112,7 @@ async def test_waf_challenge_does_not_trigger_reauth(hass: HomeAssistant) -> Non
 async def test_communication_error_does_not_trigger_reauth(hass: HomeAssistant) -> None:
     """A transport failure fails the update but must NOT force a reauth loop."""
     client = AsyncMock()
-    client.async_get_all_summaries.side_effect = LowiApiCommunicationError("down")
+    client.async_get_account_data.side_effect = LowiApiCommunicationError("down")
     coordinator = await _make_coordinator(hass, client)
 
     await coordinator.async_refresh()

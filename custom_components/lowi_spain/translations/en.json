@@ -8,6 +8,13 @@
           "password": "Password"
         }
       },
+      "phone": {
+        "title": "Choose a phone number",
+        "description": "Choose which phone number should receive the SMS verification code.",
+        "data": {
+          "phone": "Phone number"
+        }
+      },
       "otp": {
         "title": "Verification code",
         "description": "Enter the code Lowi sent by SMS.",
@@ -37,26 +44,43 @@
   },
   "entity": {
     "sensor": {
-      "remaining_data": {
+      "data_remaining": {
         "name": "Remaining data"
       },
-      "total_data": {
+      "data_used": {
+        "name": "Data used"
+      },
+      "data_total": {
         "name": "Total data allowance"
       },
-      "tariff_data_included": {
+      "data_used_pct": {
+        "name": "Data used (%)"
+      },
+      "data_included": {
         "name": "Tariff included data"
       },
       "bonus_data": {
         "name": "Bonus data"
       },
-      "accumulated_data": {
-        "name": "Accumulated data"
-      },
-      "shared_data_received": {
-        "name": "Shared data received"
-      },
-      "cost_current_month": {
+      "current_month_cost": {
         "name": "Cost this month"
+      },
+      "billing_period_end": {
+        "name": "Billing period end"
+      },
+      "last_invoice_amount": {
+        "name": "Last invoice amount"
+      },
+      "last_invoice_status": {
+        "name": "Last invoice status"
+      },
+      "last_invoice_date": {
+        "name": "Last invoice date"
+      }
+    },
+    "binary_sensor": {
+      "voice_unlimited": {
+        "name": "Unlimited calls"
       }
     }
   }

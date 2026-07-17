@@ -8,6 +8,13 @@
           "password": "Contraseña"
         }
       },
+      "phone": {
+        "title": "Elige un número de teléfono",
+        "description": "Elige a qué número de teléfono se debe enviar el código de verificación por SMS.",
+        "data": {
+          "phone": "Número de teléfono"
+        }
+      },
       "otp": {
         "title": "Código de verificación",
         "description": "Introduce el código que Lowi te ha enviado por SMS.",
@@ -37,26 +44,43 @@
   },
   "entity": {
     "sensor": {
-      "remaining_data": {
+      "data_remaining": {
         "name": "Datos restantes"
       },
-      "total_data": {
+      "data_used": {
+        "name": "Datos consumidos"
+      },
+      "data_total": {
         "name": "Datos totales"
       },
-      "tariff_data_included": {
+      "data_used_pct": {
+        "name": "Datos consumidos (%)"
+      },
+      "data_included": {
         "name": "Datos incluidos en la tarifa"
       },
       "bonus_data": {
         "name": "Datos de bonos"
       },
-      "accumulated_data": {
-        "name": "Datos acumulados"
-      },
-      "shared_data_received": {
-        "name": "Datos compartidos recibidos"
-      },
-      "cost_current_month": {
+      "current_month_cost": {
         "name": "Coste de este mes"
+      },
+      "billing_period_end": {
+        "name": "Fin del periodo de facturación"
+      },
+      "last_invoice_amount": {
+        "name": "Importe de la última factura"
+      },
+      "last_invoice_status": {
+        "name": "Estado de la última factura"
+      },
+      "last_invoice_date": {
+        "name": "Fecha de la última factura"
+      }
+    },
+    "binary_sensor": {
+      "voice_unlimited": {
+        "name": "Llamadas ilimitadas"
       }
     }
   }

@@ -18,23 +18,29 @@ This integration is under active development. The API it talks to is an **unoffi
 
 ### Manual
 
-Copy `custom_components/lowi` into your Home Assistant `config/custom_components/` directory and restart.
+Copy `custom_components/lowi_spain` into your Home Assistant `config/custom_components/` directory and restart.
 
 ## Configuration
 
-Configuration is done via the UI: **Settings → Devices & Services → Add Integration → Lowi**. You'll be asked for your **NIF/DNI** and password, then for the **SMS verification code** Lowi sends to your phone — the same two-step login lowi.es itself uses.
+Configuration is done via the UI: **Settings → Devices & Services → Add Integration → Lowi**. You'll be asked for your **NIF/DNI** and password, then — if your account has more than one phone line — which number should receive the **SMS verification code**, then for that code. This mirrors the login lowi.es itself uses; accounts with a single line skip straight to the code step.
 
 Each mobile phone line on your account becomes its own device, with sensors for:
 
+- Remaining data
+- Data used
+- Total data allowance
+- Data used (%)
 - Tariff-included data
 - Bonus/extra data
-- Remaining data *(not yet available — see [CONTRIBUTING.md](CONTRIBUTING.md))*
-- Total data allowance *(not yet available)*
-- Accumulated data from the previous cycle *(not yet available)*
-- Shared data received *(not yet available)*
-- Cost this month *(not yet available)*
+- Unlimited calls (on/off)
 
-Only the contracted-tariff figures are populated today; the live usage/cost sensors will read as unavailable until the consumption endpoint is identified (help wanted, see CONTRIBUTING.md).
+Plan name, price, roaming zone, and the extra-data breakdown (e.g. rollover from the previous cycle) are exposed as sensor attributes rather than separate entities.
+
+A separate "Lowi Account" device covers figures that aren't tied to a single line:
+
+- Cost this month
+- Billing period end
+- Last invoice amount, status, and date
 
 Data is refreshed every 6 hours. This interval is intentionally conservative — see [CONTRIBUTING.md](CONTRIBUTING.md) for why.
 

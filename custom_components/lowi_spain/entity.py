@@ -25,3 +25,23 @@ class LowiEntity(CoordinatorEntity[LowiDataUpdateCoordinator]):
             manufacturer="Lowi",
             model="Mobile line",
         )
+
+
+class LowiAccountEntity(CoordinatorEntity[LowiDataUpdateCoordinator]):
+    """Base entity for account-wide figures not tied to a single phone line."""
+
+    _attr_attribution = ATTRIBUTION
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: LowiDataUpdateCoordinator) -> None:
+        """Initialize the entity, grouped under one device for the whole account."""
+        super().__init__(coordinator)
+        unique_id = (
+            coordinator.config_entry.unique_id or coordinator.config_entry.entry_id
+        )
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, unique_id)},
+            name="Lowi Account",
+            manufacturer="Lowi",
+            model="Account",
+        )

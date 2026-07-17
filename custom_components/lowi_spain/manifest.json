@@ -1,5 +1,5 @@
 {
-  "domain": "lowi",
+  "domain": "lowi_spain",
   "name": "Lowi",
   "codeowners": ["@mandinger"],
   "config_flow": true,
@@ -8,5 +8,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/mandinger/lowi-spain/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

@@ -10,23 +10,19 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import LowiApiAuthenticationError, LowiApiError, LowiApiWafChallengeError
 
 if TYPE_CHECKING:
-    from .api import LowiSubscriptionSummary
+    from .api import LowiAccountData
     from .data import LowiConfigEntry
 
 
-class LowiDataUpdateCoordinator(
-    DataUpdateCoordinator[dict[str, "LowiSubscriptionSummary"]],
-):
+class LowiDataUpdateCoordinator(DataUpdateCoordinator["LowiAccountData"]):
     """Coordinator that polls Lowi for usage data across all phone lines."""
 
     config_entry: LowiConfigEntry
 
-    async def _async_update_data(self) -> dict[str, LowiSubscriptionSummary]:
-        """Fetch the latest summaries, keyed by msisdn."""
+    async def _async_update_data(self) -> LowiAccountData:
+        """Fetch the latest account summary and per-line usage."""
         try:
-            summaries = (
-                await self.config_entry.runtime_data.client.async_get_all_summaries()
-            )
+            return await self.config_entry.runtime_data.client.async_get_account_data()
         except LowiApiAuthenticationError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
         except LowiApiWafChallengeError as exception:
@@ -35,5 +31,3 @@ class LowiDataUpdateCoordinator(
             raise UpdateFailed(exception) from exception
         except LowiApiError as exception:
             raise UpdateFailed(exception) from exception
-
-        return {summary.msisdn: summary for summary in summaries}
