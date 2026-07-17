@@ -1,0 +1,64 @@
+name: Release on PR merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create release
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository at merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Compute release tag (vYYYYMMDD.N)
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          # Use the merge commit date to derive YYYYMMDD
+          DATE=$(git show -s --date=format:%Y%m%d --format=%cd "$MERGE_SHA")
+          git fetch --tags --force
+          # Determine next incremental number for the same day
+          EXISTING=$(git tag -l "v${DATE}.*" || true)
+          if [ -z "$EXISTING" ]; then
+            N=1
+          else
+            N=$(git tag -l "v${DATE}.*" | awk -F. '{print $2}' | sort -nr | head -n1)
+            if [[ -z "$N" ]]; then N=0; fi
+            N=$((N+1))
+          fi
+          TAG="v${DATE}.${N}"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "number=${N}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Computed tag: ${TAG} (merge sha: $MERGE_SHA)"
+
+      - name: Build integration zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd custom_components/lowi_spain
+          zip -r ../../lowi_spain.zip .
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha }}
+          generate_release_notes: true
+          files: lowi_spain.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
