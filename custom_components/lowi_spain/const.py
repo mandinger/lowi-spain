@@ -5,7 +5,7 @@ from logging import Logger, getLogger
 
 LOGGER: Logger = getLogger(__package__)
 
-DOMAIN = "lowi"
+DOMAIN = "lowi_spain"
 ATTRIBUTION = "Data provided by lowi.es"
 
 # No standard homeassistant.const key exists for a persisted session-cookie
