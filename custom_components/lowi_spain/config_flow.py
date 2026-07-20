@@ -17,7 +17,7 @@ from .api import (
     LowiApiError,
     LowiApiWafChallengeError,
 )
-from .const import CONF_COOKIES, DOMAIN, LOGGER
+from .const import CONF_COOKIES, CONF_SSO_COOKIES, DOMAIN, LOGGER
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -237,6 +237,10 @@ class LowiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_USERNAME: self._username,
             CONF_PASSWORD: self._password,
             CONF_COOKIES: self._client.export_cookies(),
+            # Needed for a later silent prompt=none SSO refresh (api.py's
+            # _async_silent_reauth()) so a session expiry doesn't force this
+            # whole interactive flow again - see coordinator.py.
+            CONF_SSO_COOKIES: self._client.export_sso_cookies(),
         }
 
         if self._is_reauth:

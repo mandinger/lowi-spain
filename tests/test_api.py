@@ -11,9 +11,13 @@ import pytest
 from yarl import URL
 
 from custom_components.lowi_spain.api import (
+    _AUTHORIZE_URL,
     API_BASE_URL,
+    KEYCLOAK_BASE_URL,
     MILOWI_API_BASE_URL,
     PORTAL_BASE_URL,
+    LowiAccountData,
+    LowiAccountSummary,
     LowiApiAuthenticationError,
     LowiApiClient,
     LowiApiCommunicationError,
@@ -333,6 +337,108 @@ async def test_expired_session_surfaces_as_auth_error(
         await session.close()
 
 
+async def test_async_silent_reauth_hits_authorize_endpoint(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """The silent-refresh dance GETs the Keycloak authorize endpoint."""
+    aioclient_mock.get(_AUTHORIZE_URL, text="<html>redirected into the portal</html>")
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        await client._async_silent_reauth()
+    finally:
+        await session.close()
+
+    assert any(
+        call[1].path == URL(_AUTHORIZE_URL).path for call in aioclient_mock.mock_calls
+    )
+
+
+async def test_get_account_data_recovers_via_silent_reauth() -> None:
+    """
+    An expired session triggers one silent refresh, then a retry that succeeds.
+
+    This is the core "seamless reauth" behavior: a session-expired failure on
+    the first attempt must not surface to the caller if a silent Keycloak SSO
+    refresh (rememberMe'd at login) lets the retry succeed.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        account_data = LowiAccountData(account=LowiAccountSummary(), lines={})
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=[LowiApiAuthenticationError("expired"), account_data],
+            ) as fetch_mock,
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                return_value=None,
+            ) as reauth_mock,
+        ):
+            result = await client.async_get_account_data()
+    finally:
+        await session.close()
+
+    assert result is account_data
+    assert fetch_mock.call_count == 2
+    reauth_mock.assert_called_once()
+
+
+async def test_get_account_data_raises_when_silent_reauth_does_not_help() -> None:
+    """
+    A still-failing retry after silent reauth surfaces the real auth error.
+
+    This means the Keycloak SSO session itself has expired (not just the
+    short-lived portal session), so the caller must fall back to Home
+    Assistant's interactive reauth rather than retrying forever.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(client, "_async_silent_reauth", return_value=None),
+            pytest.raises(LowiApiAuthenticationError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_get_account_data_waf_during_silent_reauth_propagates() -> None:
+    """
+    A WAF challenge during the silent-refresh attempt isn't masked as an auth error.
+
+    Mirrors the coordinator-level invariant (test_waf_challenge_does_not_trigger_reauth)
+    one layer down: a WAF block must never be conflated with "needs reauth".
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                side_effect=LowiApiWafChallengeError("blocked"),
+            ),
+            pytest.raises(LowiApiWafChallengeError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
 async def test_communication_error_on_transport_failure() -> None:
     """A transport-level failure is surfaced as a communication error."""
     session = aiohttp.ClientSession()
@@ -369,6 +475,34 @@ async def test_export_import_cookies_roundtrip() -> None:
             fresh_client = LowiApiClient("12345678A", "test-password", fresh_session)
             fresh_client.import_cookies(cookies)
             assert fresh_client.export_cookies().get("sessionid") == "abc123"
+        finally:
+            await fresh_session.close()
+    finally:
+        await session.close()
+
+
+async def test_export_import_sso_cookies_roundtrip() -> None:
+    """SSO cookies exported from one client can restore a session on another."""
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        session.cookie_jar.update_cookies(
+            {"KEYCLOAK_IDENTITY": "sso-token"},
+            response_url=URL(KEYCLOAK_BASE_URL),
+        )
+
+        cookies = client.export_sso_cookies()
+        assert cookies.get("KEYCLOAK_IDENTITY") == "sso-token"
+        # The portal (www.lowi.es) export must not pick up SSO-host cookies.
+        assert "KEYCLOAK_IDENTITY" not in client.export_cookies()
+
+        fresh_session = aiohttp.ClientSession()
+        try:
+            fresh_client = LowiApiClient("12345678A", "test-password", fresh_session)
+            fresh_client.import_sso_cookies(cookies)
+            assert fresh_client.export_sso_cookies().get("KEYCLOAK_IDENTITY") == (
+                "sso-token"
+            )
         finally:
             await fresh_session.close()
     finally:

@@ -50,10 +50,17 @@ if TYPE_CHECKING:
 PORTAL_BASE_URL = "https://www.lowi.es/milowi"
 API_BASE_URL = "https://www.lowi.es/api/2.0/"
 MILOWI_API_BASE_URL = "https://www.lowi.es/api/milowi/v1/"
+KEYCLOAK_BASE_URL = "https://login.lowi.es"
 
 # Confirmed by docs/lowi-auth-and-api.md §4 Step 1: this is Django's login
 # entry point, which 302-redirects into the Keycloak authorize URL.
 _LOGIN_ENTRY_URL = f"{PORTAL_BASE_URL}/login/"
+
+# Confirmed by docs/lowi-auth-and-api.md §3: the Keycloak authorize endpoint
+# for realm `milowi`. Reused for the silent-refresh dance in
+# _async_silent_reauth() below, with prompt=none instead of an interactive
+# login.
+_AUTHORIZE_URL = f"{KEYCLOAK_BASE_URL}/realms/milowi/protocol/openid-connect/auth"
 
 # A realistic browser-like identity, to avoid trivially looking like a bot to
 # Lowi's WAF. Should be replaced with the exact header set from a browser
@@ -415,7 +422,7 @@ class LowiApiClient:
         self._otp_action_url: str | None = None
 
     def export_cookies(self) -> dict[str, str]:
-        """Export session cookies for persistence across Home Assistant restarts."""
+        """Export portal (www.lowi.es) session cookies, e.g. `sessionid`."""
         jar = self._session.cookie_jar
         return {
             name: morsel.value
@@ -423,11 +430,36 @@ class LowiApiClient:
         }
 
     def import_cookies(self, cookies: Mapping[str, str]) -> None:
-        """Restore previously-exported cookies into this client's session."""
+        """Restore previously-exported portal cookies into this client's session."""
         if cookies:
             self._session.cookie_jar.update_cookies(
                 cookies,
                 response_url=URL(PORTAL_BASE_URL),
+            )
+
+    def export_sso_cookies(self) -> dict[str, str]:
+        """
+        Export Keycloak SSO cookies (login.lowi.es), e.g. `KEYCLOAK_IDENTITY`.
+
+        Kept separate from export_cookies(): these live on a different host
+        than the portal `sessionid`, and aiohttp's cookie jar scopes an
+        imported batch to a single host, so the two sets must be persisted
+        and restored independently. This is what a silent
+        _async_silent_reauth() rides to mint a fresh `sessionid` without
+        redoing the SMS one-time-code login.
+        """
+        jar = self._session.cookie_jar
+        return {
+            name: morsel.value
+            for name, morsel in jar.filter_cookies(URL(KEYCLOAK_BASE_URL)).items()
+        }
+
+    def import_sso_cookies(self, cookies: Mapping[str, str]) -> None:
+        """Restore previously-exported Keycloak SSO cookies into this session."""
+        if cookies:
+            self._session.cookie_jar.update_cookies(
+                cookies,
+                response_url=URL(KEYCLOAK_BASE_URL),
             )
 
     async def async_start_login(self) -> list[PhoneOption]:
@@ -506,7 +538,60 @@ class LowiApiClient:
         return await self.async_get_account_data()
 
     async def async_get_account_data(self) -> LowiAccountData:
-        """Fetch every mobile line's live usage plus account-wide billing info."""
+        """
+        Fetch every mobile line's live usage plus account-wide billing info.
+
+        On an expired portal session, transparently attempts a silent
+        Keycloak SSO refresh (see _async_silent_reauth()) and retries once
+        before giving up. If the Keycloak SSO session (rememberMe'd at
+        login) is still alive, this recovers with no user interaction; a
+        second failure means that SSO session has genuinely expired, and
+        propagates as a normal LowiApiAuthenticationError so the caller
+        falls back to Home Assistant's interactive reauth.
+        """
+        try:
+            return await self._async_fetch_account_data()
+        except LowiApiAuthenticationError:
+            LOGGER.debug(
+                "Lowi session expired; attempting a silent Keycloak SSO refresh",
+            )
+            await self._async_silent_reauth()
+            return await self._async_fetch_account_data()
+
+    async def _async_silent_reauth(self) -> None:
+        """
+        Try to mint a fresh portal session without user interaction.
+
+        Replays the Keycloak authorize request with `prompt=none`, reusing
+        whatever Keycloak SSO cookies (KEYCLOAK_IDENTITY/KEYCLOAK_SESSION)
+        are already in this client's session - either from the interactive
+        login earlier this run, or restored via import_sso_cookies(). Per
+        OIDC's prompt=none semantics: if that SSO session (kept alive by
+        `rememberMe=on` at login) is still valid, Keycloak redirects straight
+        through with a fresh code with no login/OTP form, and Django
+        exchanges it for a new `sessionid` into this same session. If the
+        SSO session has expired, Keycloak instead redirects back with
+        `error=login_required` and nothing changes.
+
+        Deliberately best-effort: whether this actually worked is left for
+        the caller to discover by retrying the real request, rather than
+        parsed here - that keeps this immune to Keycloak markup changes and
+        reuses the same-tested auth-failure detection in
+        _async_api_request().
+        """
+        await self._get_html(
+            _AUTHORIZE_URL,
+            params={
+                "client_id": "web-client",
+                "redirect_uri": f"{PORTAL_BASE_URL}/oauth/",
+                "response_type": "code",
+                "scope": "openid",
+                "prompt": "none",
+            },
+        )
+
+    async def _async_fetch_account_data(self) -> LowiAccountData:
+        """Perform the actual data calls for async_get_account_data()."""
         subscriptions_raw = await self._async_api_request(
             "GET",
             "me/subscriptions",

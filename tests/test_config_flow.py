@@ -17,7 +17,7 @@ from custom_components.lowi_spain.api import (
     LowiApiWafChallengeError,
     PhoneOption,
 )
-from custom_components.lowi_spain.const import CONF_COOKIES, DOMAIN
+from custom_components.lowi_spain.const import CONF_COOKIES, CONF_SSO_COOKIES, DOMAIN
 
 from .const import MOCK_CONFIG, MSISDN_PRIMARY, MSISDN_SECONDARY
 
@@ -75,6 +75,7 @@ async def test_full_user_flow_success_single_phone(hass: HomeAssistant) -> None:
     assert result["data"][CONF_USERNAME] == MOCK_CONFIG[CONF_USERNAME]
     assert result["data"][CONF_PASSWORD] == MOCK_CONFIG[CONF_PASSWORD]
     assert CONF_COOKIES in result["data"]
+    assert CONF_SSO_COOKIES in result["data"]
 
 
 async def test_full_user_flow_success_multi_phone(hass: HomeAssistant) -> None:
@@ -256,3 +257,4 @@ async def test_reauth_flow_success(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_PASSWORD] == "new-password"
+    assert CONF_SSO_COOKIES in entry.data

@@ -14,7 +14,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
 
 from .api import LowiApiClient
-from .const import CONF_COOKIES, DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
+from .const import (
+    CONF_COOKIES,
+    CONF_SSO_COOKIES,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    LOGGER,
+)
 from .coordinator import LowiDataUpdateCoordinator
 from .data import LowiData
 
@@ -43,6 +49,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LowiConfigEntry) -> bool
     # SMS-code login, so a restart doesn't force the user through that dance
     # again unless the session has actually expired (see api.py).
     client.import_cookies(entry.data.get(CONF_COOKIES, {}))
+    # Restores the longer-lived Keycloak SSO cookies too, so a restart can
+    # still silently refresh an expired portal session (api.py's
+    # _async_silent_reauth()) instead of forcing interactive reauth.
+    client.import_sso_cookies(entry.data.get(CONF_SSO_COOKIES, {}))
 
     entry.runtime_data = LowiData(
         client=client,

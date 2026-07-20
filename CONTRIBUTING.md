@@ -27,7 +27,7 @@ What's still **unverified** (best-effort guesses in `custom_components/lowi_spai
 
 - The **display label** for each offered phone-selection option. The submitted value (`selectedPhone=<msisdn>`) is confirmed by a real capture, but the surrounding label markup (how Keycloak renders e.g. a masked "***379") was not captured — `_extract_phone_options()` falls back to showing the raw value when no label text is found.
 - Whether a session cookie persisted across a Home Assistant restart still works when reused from a different connection than the one that obtained it — Incapsula's `reese84` cookie is a device/TLS-fingerprint check, and there's no guarantee it survives being replayed by a different HTTP client, even with the same cookie values.
-- Session/SSO longevity in practice (how long an idle session survives, and whether a lapsed session silently re-authenticates via Keycloak SSO or forces a full OTP again). The integration currently always falls back to Home Assistant's interactive reauth on any session failure; a silent `prompt=none` refresh is a documented future improvement (see `docs/lowi-auth-and-api.md` §5, §8).
+- Session/SSO longevity in practice (how long an idle session survives before even the silent refresh below stops working). The integration attempts a silent `prompt=none` Keycloak SSO refresh on a session failure before falling back to Home Assistant's interactive reauth (see `docs/lowi-auth-and-api.md` §5, §8) — how long that silent path keeps working unattended isn't measured yet.
 
 ## How the real API is (re)discovered
 
