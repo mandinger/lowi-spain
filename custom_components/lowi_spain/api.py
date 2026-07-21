@@ -52,15 +52,23 @@ API_BASE_URL = "https://www.lowi.es/api/2.0/"
 MILOWI_API_BASE_URL = "https://www.lowi.es/api/milowi/v1/"
 KEYCLOAK_BASE_URL = "https://login.lowi.es"
 
-# Confirmed by docs/lowi-auth-and-api.md §4 Step 1: this is Django's login
-# entry point, which 302-redirects into the Keycloak authorize URL.
-_LOGIN_ENTRY_URL = f"{PORTAL_BASE_URL}/login/"
+# UNVERIFIED (the refresh-flow HAR's Set-Cookie headers were scrubbed before
+# capture, so this isn't confirmed byte-for-byte): Keycloak's documented
+# default is to scope its own auth cookies (KEYCLOAK_IDENTITY,
+# KEYCLOAK_SESSION, AUTH_SESSION_ID, KC_RESTART, ...) to this realm path
+# rather than the bare host, so a single Keycloak instance hosting multiple
+# realms doesn't leak cookies across them. export_sso_cookies()/
+# import_sso_cookies() below filter/scope against this path - not just
+# KEYCLOAK_BASE_URL - since a too-narrow filter would silently exclude them.
+_KEYCLOAK_REALM_URL = f"{KEYCLOAK_BASE_URL}/realms/milowi/"
 
-# Confirmed by docs/lowi-auth-and-api.md §3: the Keycloak authorize endpoint
-# for realm `milowi`. Reused for the silent-refresh dance in
-# _async_silent_reauth() below, with prompt=none instead of an interactive
-# login.
-_AUTHORIZE_URL = f"{KEYCLOAK_BASE_URL}/realms/milowi/protocol/openid-connect/auth"
+# Confirmed by docs/lowi-auth-and-api.md §4 Step 1: this is Django's login
+# entry point, which 302-redirects into the Keycloak authorize URL. Also
+# reused as-is for the silent-refresh dance in _async_silent_reauth() below -
+# a captured "already logged in" browser reload confirms Django's own
+# redirect (not a hand-built prompt=none Keycloak call) is what lets a
+# returning session skip the login form.
+_LOGIN_ENTRY_URL = f"{PORTAL_BASE_URL}/login/"
 
 # A realistic browser-like identity, to avoid trivially looking like a bot to
 # Lowi's WAF. Should be replaced with the exact header set from a browser
@@ -447,11 +455,18 @@ class LowiApiClient:
         and restored independently. This is what a silent
         _async_silent_reauth() rides to mint a fresh `sessionid` without
         redoing the SMS one-time-code login.
+
+        Filtered against _KEYCLOAK_REALM_URL, not just the bare host: Keycloak
+        scopes these cookies to `Path=/realms/milowi/`, and cookie-path
+        matching means filtering against the host root silently excludes
+        them (they'd still be sent on the real authorize request - which
+        uses the realm path - so this only breaks *exporting* them, e.g. for
+        persistence across a restart).
         """
         jar = self._session.cookie_jar
         return {
             name: morsel.value
-            for name, morsel in jar.filter_cookies(URL(KEYCLOAK_BASE_URL)).items()
+            for name, morsel in jar.filter_cookies(URL(_KEYCLOAK_REALM_URL)).items()
         }
 
     def import_sso_cookies(self, cookies: Mapping[str, str]) -> None:
@@ -459,7 +474,7 @@ class LowiApiClient:
         if cookies:
             self._session.cookie_jar.update_cookies(
                 cookies,
-                response_url=URL(KEYCLOAK_BASE_URL),
+                response_url=URL(_KEYCLOAK_REALM_URL),
             )
 
     async def async_start_login(self) -> list[PhoneOption]:
@@ -562,16 +577,24 @@ class LowiApiClient:
         """
         Try to mint a fresh portal session without user interaction.
 
-        Replays the Keycloak authorize request with `prompt=none`, reusing
-        whatever Keycloak SSO cookies (KEYCLOAK_IDENTITY/KEYCLOAK_SESSION)
-        are already in this client's session - either from the interactive
-        login earlier this run, or restored via import_sso_cookies(). Per
-        OIDC's prompt=none semantics: if that SSO session (kept alive by
-        `rememberMe=on` at login) is still valid, Keycloak redirects straight
-        through with a fresh code with no login/OTP form, and Django
-        exchanges it for a new `sessionid` into this same session. If the
-        SSO session has expired, Keycloak instead redirects back with
-        `error=login_required` and nothing changes.
+        Replays the exact same `GET /milowi/login/` entry point
+        async_start_login() uses, reusing whatever cookies are already in
+        this client's session - Django's own `sessionid` (if not fully
+        expired yet) and/or the Keycloak SSO cookies (KEYCLOAK_IDENTITY/
+        KEYCLOAK_SESSION), either from the interactive login earlier this
+        run or restored via import_sso_cookies().
+
+        Confirmed by a captured "already logged in" browser reload (not a
+        manual re-login): this is what a real browser does, and it is NOT a
+        hand-built `prompt=none` Keycloak call (an earlier, untested version
+        of this method built one, and it doesn't match what Django/Keycloak
+        actually do - see docs/lowi-auth-and-api.md §5). Django's `/login/`
+        view recognizes the returning browser and redirects straight into
+        Keycloak with an identifying `userId` hint; Keycloak recognizes its
+        own SSO cookies and redirects back with a fresh `code` and no login/
+        OTP form, which Django exchanges for a new `sessionid` in this same
+        session. If the SSO session has actually expired, this instead lands
+        on the normal Keycloak login form, same as a fresh login would.
 
         Deliberately best-effort: whether this actually worked is left for
         the caller to discover by retrying the real request, rather than
@@ -579,16 +602,7 @@ class LowiApiClient:
         reuses the same-tested auth-failure detection in
         _async_api_request().
         """
-        await self._get_html(
-            _AUTHORIZE_URL,
-            params={
-                "client_id": "web-client",
-                "redirect_uri": f"{PORTAL_BASE_URL}/oauth/",
-                "response_type": "code",
-                "scope": "openid",
-                "prompt": "none",
-            },
-        )
+        await self._get_html(_LOGIN_ENTRY_URL)
 
     async def _async_fetch_account_data(self) -> LowiAccountData:
         """Perform the actual data calls for async_get_account_data()."""

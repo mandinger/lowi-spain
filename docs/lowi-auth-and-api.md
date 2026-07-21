@@ -203,20 +203,36 @@ Because `web-client` is confidential, the durable, HA-friendly approach is
 
 **Coordinator (unattended polling) — implemented:**
 - Call the data endpoint(s) with the stored `sessionid`.
-- On `401`/non-JSON response (session expired), do a **silent re-authorization**: repeat
-  the authorize request reusing the persisted Keycloak SSO cookies with **`prompt=none`**,
-  then retry the original call once. If the Keycloak SSO session is still alive,
-  Keycloak returns a fresh `code` **without** asking for password/OTP → Django mints a
-  new `sessionid`. No user interaction, no new OTP. See
+- On `401`/non-JSON response (session expired), do a **silent re-authorization**, then
+  retry the original call once. **Confirmed by a captured "already logged in" browser
+  reload** (`tools/www.lowi.es.refresh.scrubbed.har` in the lowi-api repo — a plain
+  page revisit, not a manual re-login): this is *not* a hand-built `prompt=none`
+  authorize call (that was this doc's original untested guess). It's simply **replaying
+  `GET /milowi/login/`** - the exact same entry point `async_start_login()` already
+  uses. Django's own `/login/` view recognizes the returning browser and 302s straight
+  to Keycloak with `userId=<encrypted>&userType=cliente` embedded (vs. `userId=&
+  userType=no+cliente` for a true anonymous visitor, confirmed in §7's probe); Keycloak
+  in turn recognizes its own SSO cookies and redirects back with a fresh `code` with
+  **no** login/OTP form → Django mints a new `sessionid`. No `prompt=none` parameter
+  needed or observed anywhere in the capture. See
   `LowiApiClient.async_get_account_data()` / `_async_silent_reauth()` in
   `custom_components/lowi_spain/api.py`.
-- Only when the SSO session itself has expired does the retry fail too, which surfaces
-  as a normal `LowiApiAuthenticationError` → HA's interactive reauth flow. The exact SSO
+- Only when the SSO session itself has expired does this land back on the Keycloak
+  login form (same as a fresh login) and the retry fails too, surfacing as a normal
+  `LowiApiAuthenticationError` → HA's interactive reauth flow. The exact SSO
   Session Max/Idle isn't measured yet (see §8) — with `rememberMe` it's typically days.
 - Because the SSO cookies (`login.lowi.es`) live on a different host than the portal
   `sessionid` (`www.lowi.es`), they're persisted separately in the config entry
   (`CONF_SSO_COOKIES`) and refreshed after every successful poll by the coordinator, so
-  a silently-rotated session survives a Home Assistant restart too.
+  a silently-rotated session survives a Home Assistant restart too. **Caveat found
+  after initial implementation (UNVERIFIED - the refresh HAR's Set-Cookie headers were
+  scrubbed, so this is Keycloak's documented default behavior, not a byte-for-byte
+  capture):** Keycloak scopes those cookies to `Path=/realms/milowi/`, not the bare
+  `login.lowi.es` host — exporting/importing them must filter against that realm path
+  or the cookie-path match silently excludes them, so nothing usable ever actually gets
+  persisted (the live in-session refresh still works fine, since aiohttp matches
+  cookies against the real request path regardless of what the export function asks
+  for — only *persistence across a restart* silently breaks).
 
 **Why not the shortcuts:**
 - *Direct `password` grant against Keycloak* → `web-client` is confidential and MFA is

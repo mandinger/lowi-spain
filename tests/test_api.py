@@ -11,7 +11,7 @@ import pytest
 from yarl import URL
 
 from custom_components.lowi_spain.api import (
-    _AUTHORIZE_URL,
+    _KEYCLOAK_REALM_URL,
     API_BASE_URL,
     KEYCLOAK_BASE_URL,
     MILOWI_API_BASE_URL,
@@ -337,11 +337,17 @@ async def test_expired_session_surfaces_as_auth_error(
         await session.close()
 
 
-async def test_async_silent_reauth_hits_authorize_endpoint(
+async def test_async_silent_reauth_replays_login_entry_point(
     aioclient_mock: AiohttpClientMocker,
 ) -> None:
-    """The silent-refresh dance GETs the Keycloak authorize endpoint."""
-    aioclient_mock.get(_AUTHORIZE_URL, text="<html>redirected into the portal</html>")
+    """
+    The silent-refresh dance replays the same GET /milowi/login/ as a fresh login.
+
+    Confirmed by a captured "already logged in" browser reload: there's no
+    hand-built prompt=none Keycloak call - Django's own /login/ redirect is
+    what lets a returning session skip the login form.
+    """
+    aioclient_mock.get(_ENTRY_URL, text="<html>redirected into the portal</html>")
     client, session = _client_from_mocker(aioclient_mock)
     try:
         await client._async_silent_reauth()
@@ -349,7 +355,7 @@ async def test_async_silent_reauth_hits_authorize_endpoint(
         await session.close()
 
     assert any(
-        call[1].path == URL(_AUTHORIZE_URL).path for call in aioclient_mock.mock_calls
+        call[1].path == URL(_ENTRY_URL).path for call in aioclient_mock.mock_calls
     )
 
 
@@ -482,19 +488,38 @@ async def test_export_import_cookies_roundtrip() -> None:
 
 
 async def test_export_import_sso_cookies_roundtrip() -> None:
-    """SSO cookies exported from one client can restore a session on another."""
+    """
+    SSO cookies exported from one client can restore a session on another.
+
+    Seeded at _KEYCLOAK_REALM_URL (.../realms/milowi/), matching how Keycloak
+    actually scopes these cookies via a Path attribute - a regression test
+    for a bug where filtering against the bare host (KEYCLOAK_BASE_URL, no
+    path) silently excluded them from export_sso_cookies(), so persisted SSO
+    cookies never actually survived a restart even though the live in-memory
+    session kept working.
+    """
     session = aiohttp.ClientSession()
     try:
         client = LowiApiClient("12345678A", "test-password", session)
         session.cookie_jar.update_cookies(
             {"KEYCLOAK_IDENTITY": "sso-token"},
-            response_url=URL(KEYCLOAK_BASE_URL),
+            response_url=URL(_KEYCLOAK_REALM_URL),
         )
 
         cookies = client.export_sso_cookies()
         assert cookies.get("KEYCLOAK_IDENTITY") == "sso-token"
         # The portal (www.lowi.es) export must not pick up SSO-host cookies.
         assert "KEYCLOAK_IDENTITY" not in client.export_cookies()
+        # Regression check: filtering from the bare host (the old, buggy
+        # behavior) can't see a realm-path-scoped cookie - proving the
+        # realm-scoped path is what actually makes export_sso_cookies() work.
+        bare_host_cookies = {
+            name: morsel.value
+            for name, morsel in session.cookie_jar.filter_cookies(
+                URL(KEYCLOAK_BASE_URL),
+            ).items()
+        }
+        assert "KEYCLOAK_IDENTITY" not in bare_host_cookies
 
         fresh_session = aiohttp.ClientSession()
         try:
