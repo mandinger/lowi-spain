@@ -97,6 +97,38 @@ _LOGIN_ERROR_MARKERS = ("kc-feedback-text", "alert-error")
 # §4 Step 3 captured `selectedPhone=<MSISDN>&next=Enviar+código` verbatim.
 _PHONE_FIELD_NAME = "selectedPhone"
 
+# Transient per-flow auth cookies that a real browser discards once a login
+# flow finishes, but which this client would otherwise persist and replay.
+# Replaying them into a silent refresh makes Keycloak try to resume/restart a
+# dead authentication session, which was observed to send it into an infinite
+# www.lowi.es <-> login.lowi.es redirect loop (aiohttp TooManyRedirects). They
+# are cleared before _async_silent_reauth()'s GET so Django/Keycloak start a
+# clean SSO round-trip. The DURABLE SSO identity
+# (KEYCLOAK_IDENTITY/KEYCLOAK_SESSION/KEYCLOAK_REMEMBER_ME) and the Incapsula
+# WAF cookies are deliberately NOT included - dropping those would break the
+# SSO ride or trip the WAF. `sessionid` is here because by the time a silent
+# refresh runs the portal session has already been rejected (the 401 that
+# triggered it), so the stale value is worthless and only risks confusing the
+# fresh flow. A denylist (not an allowlist) keeps the blast radius small so an
+# unrelated cookie is never accidentally dropped.
+_TRANSIENT_FLOW_COOKIES = frozenset(
+    {
+        "sessionid",
+        "KC_RESTART",
+        "KC_STATE_CHECKER",
+        "AUTH_SESSION_ID",
+        "AUTH_SESSION_ID_LEGACY",
+    },
+)
+
+# aiohttp's default redirect cap is 10. A healthy silent SSO round-trip
+# (Django -> Keycloak authorize -> back to Django callback -> dashboard),
+# even through Incapsula, is well under that, so 10 hops already means a loop.
+# The silent path uses a higher cap purely so the redirect-chain debug log has
+# more to show if it still loops after the transient-cookie clear above -
+# not because a legitimate flow is expected to need it.
+_SILENT_REAUTH_MAX_REDIRECTS = 30
+
 _FORM_TAG_RE = re.compile(r"<form\b[^>]*>", re.IGNORECASE)
 _INPUT_TAG_RE = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
 _SELECT_RE = re.compile(
@@ -233,6 +265,22 @@ def _is_waf_challenge(body_text: str) -> bool:
 def _looks_like_login_failure(html: str) -> bool:
     """Heuristic: does this Keycloak page show a login/OTP error message."""
     return any(marker in html for marker in _LOGIN_ERROR_MARKERS)
+
+
+def _is_keycloak_login_form(html: str) -> bool:
+    """
+    Heuristic: is this the Keycloak username/password login form.
+
+    Used only for diagnostics (never to drive control flow): a silent refresh
+    or an API call that lands here means the Keycloak SSO session itself has
+    expired, so interactive reauth is unavoidable - as opposed to a transient
+    or misconfigured failure. Detects the `password` input the credentials
+    form always carries; an authenticated portal page never renders one.
+    """
+    names = {
+        dict(_ATTR_RE.findall(tag)).get("name") for tag in _INPUT_TAG_RE.findall(html)
+    }
+    return "password" in names
 
 
 def _extract_form_action(html: str, base_url: str) -> str:
@@ -563,14 +611,31 @@ class LowiApiClient:
         second failure means that SSO session has genuinely expired, and
         propagates as a normal LowiApiAuthenticationError so the caller
         falls back to Home Assistant's interactive reauth.
+
+        If the silent refresh itself can't even complete - e.g. Keycloak
+        sends the entry point into a redirect loop - that surfaces as a
+        LowiApiCommunicationError here. It is deliberately converted back to
+        the original auth failure so Home Assistant falls back to interactive
+        reauth, rather than treating a broken refresh as a transient network
+        blip and retrying it forever (which never recovers and never prompts
+        the user). A genuine WAF challenge is left alone: it means "try again
+        later", not "re-authenticate".
         """
         try:
             return await self._async_fetch_account_data()
-        except LowiApiAuthenticationError:
+        except LowiApiAuthenticationError as auth_error:
             LOGGER.debug(
                 "Lowi session expired; attempting a silent Keycloak SSO refresh",
             )
-            await self._async_silent_reauth()
+            try:
+                await self._async_silent_reauth()
+            except LowiApiCommunicationError as reauth_error:
+                LOGGER.debug(
+                    "Silent Keycloak SSO refresh could not complete (%s); "
+                    "falling back to interactive reauth",
+                    reauth_error,
+                )
+                raise auth_error from reauth_error
             return await self._async_fetch_account_data()
 
     async def _async_silent_reauth(self) -> None:
@@ -596,13 +661,71 @@ class LowiApiClient:
         session. If the SSO session has actually expired, this instead lands
         on the normal Keycloak login form, same as a fresh login would.
 
+        Before the GET, the transient per-flow cookies
+        (_TRANSIENT_FLOW_COOKIES: the dead portal `sessionid`, Keycloak's
+        `KC_RESTART`/`KC_STATE_CHECKER`/`AUTH_SESSION_ID`) are cleared. A real
+        browser discards these once a login flow completes; replaying them was
+        observed to send Keycloak into an infinite redirect loop trying to
+        resume a dead authentication session (see _TRANSIENT_FLOW_COOKIES).
+
         Deliberately best-effort: whether this actually worked is left for
         the caller to discover by retrying the real request, rather than
         parsed here - that keeps this immune to Keycloak markup changes and
         reuses the same-tested auth-failure detection in
-        _async_api_request().
+        _async_api_request(). The debug logging below is diagnostic only: it
+        classifies the outcome (did we even have SSO cookies to ride; did we
+        land back on the login form) without changing the best-effort contract.
         """
-        await self._get_html(_LOGIN_ENTRY_URL)
+        # Names only, never values: cookie names (sessionid, KEYCLOAK_IDENTITY,
+        # ...) are safe to log; their values are session secrets and are not.
+        portal_cookies = sorted(self.export_cookies())
+        sso_cookies = sorted(self.export_sso_cookies())
+        LOGGER.debug(
+            "Silent reauth starting with portal cookies %s and SSO cookies %s",
+            portal_cookies or "(none)",
+            sso_cookies or "(none)",
+        )
+        if not sso_cookies:
+            LOGGER.debug(
+                "No Keycloak SSO cookies are available, so the silent refresh "
+                "has nothing to ride and will land on the login form - "
+                "interactive reauth is expected. This is normal for a session "
+                "first created before SSO-cookie persistence worked; a fresh "
+                "login should populate them going forward.",
+            )
+
+        dropped = sorted(
+            {*portal_cookies, *sso_cookies} & _TRANSIENT_FLOW_COOKIES,
+        )
+        if dropped:
+            self._session.cookie_jar.clear(
+                lambda morsel: morsel.key in _TRANSIENT_FLOW_COOKIES,
+            )
+            LOGGER.debug(
+                "Cleared transient flow cookies before the silent refresh to "
+                "avoid a Keycloak redirect loop: %s",
+                dropped,
+            )
+
+        html, url = await self._get_html(
+            _LOGIN_ENTRY_URL,
+            max_redirects=_SILENT_REAUTH_MAX_REDIRECTS,
+        )
+        landed_path = str(URL(url).with_query(None))
+        if _is_keycloak_login_form(html):
+            LOGGER.debug(
+                "Silent reauth landed back on a Keycloak login form at %s "
+                "(%s): the SSO session has expired, so the retry will fail and "
+                "interactive reauth will be required.",
+                landed_path,
+                _describe_form_fields(html),
+            )
+        else:
+            LOGGER.debug(
+                "Silent reauth followed through to a non-login page at %s; the "
+                "retry will confirm whether a fresh session was minted.",
+                landed_path,
+            )
 
     async def _async_fetch_account_data(self) -> LowiAccountData:
         """Perform the actual data calls for async_get_account_data()."""
@@ -653,6 +776,23 @@ class LowiApiClient:
         except TimeoutError as exception:
             msg = f"Timeout communicating with Lowi - {exception}"
             raise LowiApiCommunicationError(msg) from exception
+        except aiohttp.TooManyRedirects as exception:
+            # A redirect loop, most often during the silent SSO refresh. Log
+            # the chain (host+path only - the query carries the OIDC `code`/
+            # `state` secrets) so the cycle is visible: whether it's Django
+            # and Keycloak bouncing at each other, or a WAF interstitial loop.
+            chain = " -> ".join(
+                f"{redirect.status} {URL(str(redirect.url)).with_query(None)}"
+                for redirect in exception.history
+            )
+            LOGGER.debug(
+                "Redirect loop for %s after %d hop(s): %s",
+                URL(url).with_query(None),
+                len(exception.history),
+                chain or "(no history)",
+            )
+            msg = f"Redirect loop communicating with Lowi - {exception}"
+            raise LowiApiCommunicationError(msg) from exception
         except (aiohttp.ClientError, socket.gaierror) as exception:
             msg = f"Error communicating with Lowi - {exception}"
             raise LowiApiCommunicationError(msg) from exception
@@ -662,14 +802,30 @@ class LowiApiClient:
         url: str,
         *,
         params: Mapping[str, str] | None = None,
+        max_redirects: int | None = None,
     ) -> tuple[str, str]:
         """GET a page expected to contain a Keycloak login form."""
+        extra: dict[str, Any] = {}
+        if max_redirects is not None:
+            extra["max_redirects"] = max_redirects
         response = await self._request(
             "GET",
             url,
             params=params,
             headers=DEFAULT_HEADERS,
+            **extra,
         )
+        if response.history:
+            # host+path only (query stripped) - see the loop log above for why.
+            LOGGER.debug(
+                "GET %s followed %d redirect(s): %s",
+                URL(url).with_query(None),
+                len(response.history),
+                " -> ".join(
+                    f"{redirect.status} {URL(str(redirect.url)).with_query(None)}"
+                    for redirect in response.history
+                ),
+            )
         html = await response.text()
         if _is_waf_challenge(html):
             msg = "Lowi's anti-bot protection is blocking this request"
@@ -718,14 +874,34 @@ class LowiApiClient:
             msg = "Lowi's anti-bot protection is blocking this request"
             raise LowiApiWafChallengeError(msg)
 
+        content_type = response.headers.get("Content-Type", "")
+
         if response.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+            LOGGER.debug(
+                "Lowi API %s %s rejected auth with HTTP %s (content-type %r)",
+                method,
+                path,
+                response.status,
+                content_type,
+            )
             msg = "Not authenticated with Lowi"
             raise LowiApiAuthenticationError(msg)
 
-        if "application/json" not in response.headers.get("Content-Type", ""):
+        if "application/json" not in content_type:
             # A cookie-session failure doesn't 401 here; Lowi just serves the
             # HTML login page instead of JSON. Treat that as an auth failure
             # rather than a generic communication error.
+            LOGGER.debug(
+                "Lowi API %s %s returned a non-JSON response (HTTP %s, "
+                "content-type %r, landed on %s, login form present: %s) - "
+                "treating as an expired session",
+                method,
+                path,
+                response.status,
+                content_type,
+                str(response.url.with_query(None)),
+                _is_keycloak_login_form(body_text),
+            )
             msg = "Not authenticated with Lowi (received a non-JSON response)"
             raise LowiApiAuthenticationError(msg)
 

@@ -25,6 +25,7 @@ from custom_components.lowi_spain.api import (
     LowiApiWafChallengeError,
     PhoneOption,
     _extract_phone_options,
+    _is_keycloak_login_form,
 )
 
 from .const import (
@@ -104,6 +105,22 @@ def test_extract_phone_options_from_unlabelled_radio_input() -> None:
 def test_extract_phone_options_absent() -> None:
     """No phone field present yields an empty list (surfaced as an error upstream)."""
     assert _extract_phone_options("<form><input name='code'/></form>") == []
+
+
+def test_is_keycloak_login_form_detects_password_field() -> None:
+    """A page carrying a password input is classified as the login form."""
+    html = (
+        '<form id="kc-form-login"><input name="username"/>'
+        '<input name="password" type="password"/></form>'
+    )
+    assert _is_keycloak_login_form(html) is True
+
+
+def test_is_keycloak_login_form_false_for_authenticated_page() -> None:
+    """An authenticated portal page (no password field) is not a login form."""
+    assert _is_keycloak_login_form("<html><body>Mi Lowi</body></html>") is False
+    # The OTP and phone-select steps aren't the credentials form either.
+    assert _is_keycloak_login_form('<form><input name="code"/></form>') is False
 
 
 def _register_happy_path_login(
@@ -441,6 +458,74 @@ async def test_get_account_data_waf_during_silent_reauth_propagates() -> None:
             pytest.raises(LowiApiWafChallengeError),
         ):
             await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_get_account_data_falls_back_to_reauth_on_silent_reauth_loop() -> None:
+    """
+    A redirect loop during the silent refresh becomes an auth failure, not a comms error.
+
+    A Keycloak redirect loop surfaces from _async_silent_reauth() as a
+    LowiApiCommunicationError. If that propagated as-is, the coordinator would
+    treat a permanently-broken refresh as a transient network blip and keep
+    retrying forever without ever prompting the user. It must instead fall
+    back to interactive reauth, i.e. surface the original auth failure.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                side_effect=LowiApiCommunicationError("Redirect loop"),
+            ),
+            pytest.raises(LowiApiAuthenticationError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_async_silent_reauth_clears_transient_flow_cookies(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """
+    Stale per-flow cookies are dropped before the silent refresh; SSO identity is kept.
+
+    Replaying a dead portal `sessionid` or Keycloak's KC_RESTART/
+    AUTH_SESSION_ID was observed to send the silent refresh into an infinite
+    redirect loop. Those transient tokens must be cleared first, while the
+    durable SSO identity (KEYCLOAK_IDENTITY/KEYCLOAK_SESSION) must survive so
+    the refresh still has an SSO session to ride.
+    """
+    aioclient_mock.get(_ENTRY_URL, text="<html>portal</html>")
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        client.import_cookies({"sessionid": "stale-portal-session"})
+        client.import_sso_cookies(
+            {
+                "KC_RESTART": "stale-restart-token",
+                "AUTH_SESSION_ID": "stale-auth-session",
+                "KEYCLOAK_IDENTITY": "durable-sso-identity",
+                "KEYCLOAK_SESSION": "durable-sso-session",
+            },
+        )
+
+        await client._async_silent_reauth()
+
+        assert "sessionid" not in client.export_cookies()
+        sso_after = client.export_sso_cookies()
+        assert "KC_RESTART" not in sso_after
+        assert "AUTH_SESSION_ID" not in sso_after
+        assert sso_after.get("KEYCLOAK_IDENTITY") == "durable-sso-identity"
+        assert sso_after.get("KEYCLOAK_SESSION") == "durable-sso-session"
     finally:
         await session.close()
 

@@ -62,3 +62,13 @@ class LowiDataUpdateCoordinator(DataUpdateCoordinator["LowiAccountData"]):
             entry,
             data={**entry.data, CONF_COOKIES: cookies, CONF_SSO_COOKIES: sso_cookies},
         )
+        # Names/counts only (never values). Seeing this line means a silent
+        # refresh actually minted a fresh session and it was persisted, so the
+        # next restart shouldn't need interactive reauth.
+        self.logger.debug(
+            "Persisted rotated Lowi cookies: %d portal %s, %d SSO %s",
+            len(cookies),
+            sorted(cookies),
+            len(sso_cookies),
+            sorted(sso_cookies),
+        )
