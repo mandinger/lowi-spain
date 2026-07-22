@@ -14,7 +14,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
 
 from .api import LowiApiClient
-from .const import CONF_COOKIES, DEFAULT_SCAN_INTERVAL, DOMAIN, LOGGER
+from .const import (
+    CONF_COOKIES,
+    CONF_SSO_COOKIES,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    LOGGER,
+)
 from .coordinator import LowiDataUpdateCoordinator
 from .data import LowiData
 
@@ -42,7 +48,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: LowiConfigEntry) -> bool
     # Restores the session established during the config flow's NIF+password+
     # SMS-code login, so a restart doesn't force the user through that dance
     # again unless the session has actually expired (see api.py).
-    client.import_cookies(entry.data.get(CONF_COOKIES, {}))
+    restored_cookies = entry.data.get(CONF_COOKIES, {})
+    # Restores the longer-lived Keycloak SSO cookies too, so a restart can
+    # still silently refresh an expired portal session (api.py's
+    # _async_silent_reauth()) instead of forcing interactive reauth.
+    restored_sso_cookies = entry.data.get(CONF_SSO_COOKIES, {})
+    client.import_cookies(restored_cookies)
+    client.import_sso_cookies(restored_sso_cookies)
+    # Names/counts only (never values): if no SSO cookies were restored, a
+    # later silent refresh can't work and interactive reauth is unavoidable -
+    # this line makes that visible up front. An entry created before SSO-cookie
+    # persistence worked will show 0 SSO cookies until the user re-logs in.
+    LOGGER.debug(
+        "Restored %d portal cookie(s) %s and %d Keycloak SSO cookie(s) %s "
+        "from the config entry",
+        len(restored_cookies),
+        sorted(restored_cookies),
+        len(restored_sso_cookies),
+        sorted(restored_sso_cookies),
+    )
 
     entry.runtime_data = LowiData(
         client=client,

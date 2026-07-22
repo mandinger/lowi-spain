@@ -11,9 +11,13 @@ import pytest
 from yarl import URL
 
 from custom_components.lowi_spain.api import (
+    _KEYCLOAK_REALM_URL,
     API_BASE_URL,
+    KEYCLOAK_BASE_URL,
     MILOWI_API_BASE_URL,
     PORTAL_BASE_URL,
+    LowiAccountData,
+    LowiAccountSummary,
     LowiApiAuthenticationError,
     LowiApiClient,
     LowiApiCommunicationError,
@@ -21,6 +25,7 @@ from custom_components.lowi_spain.api import (
     LowiApiWafChallengeError,
     PhoneOption,
     _extract_phone_options,
+    _is_keycloak_login_form,
 )
 
 from .const import (
@@ -100,6 +105,22 @@ def test_extract_phone_options_from_unlabelled_radio_input() -> None:
 def test_extract_phone_options_absent() -> None:
     """No phone field present yields an empty list (surfaced as an error upstream)."""
     assert _extract_phone_options("<form><input name='code'/></form>") == []
+
+
+def test_is_keycloak_login_form_detects_password_field() -> None:
+    """A page carrying a password input is classified as the login form."""
+    html = (
+        '<form id="kc-form-login"><input name="username"/>'
+        '<input name="password" type="password"/></form>'
+    )
+    assert _is_keycloak_login_form(html) is True
+
+
+def test_is_keycloak_login_form_false_for_authenticated_page() -> None:
+    """An authenticated portal page (no password field) is not a login form."""
+    assert _is_keycloak_login_form("<html><body>Mi Lowi</body></html>") is False
+    # The OTP and phone-select steps aren't the credentials form either.
+    assert _is_keycloak_login_form('<form><input name="code"/></form>') is False
 
 
 def _register_happy_path_login(
@@ -333,6 +354,182 @@ async def test_expired_session_surfaces_as_auth_error(
         await session.close()
 
 
+async def test_async_silent_reauth_replays_login_entry_point(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """
+    The silent-refresh dance replays the same GET /milowi/login/ as a fresh login.
+
+    Confirmed by a captured "already logged in" browser reload: there's no
+    hand-built prompt=none Keycloak call - Django's own /login/ redirect is
+    what lets a returning session skip the login form.
+    """
+    aioclient_mock.get(_ENTRY_URL, text="<html>redirected into the portal</html>")
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        await client._async_silent_reauth()
+    finally:
+        await session.close()
+
+    assert any(
+        call[1].path == URL(_ENTRY_URL).path for call in aioclient_mock.mock_calls
+    )
+
+
+async def test_get_account_data_recovers_via_silent_reauth() -> None:
+    """
+    An expired session triggers one silent refresh, then a retry that succeeds.
+
+    This is the core "seamless reauth" behavior: a session-expired failure on
+    the first attempt must not surface to the caller if a silent Keycloak SSO
+    refresh (rememberMe'd at login) lets the retry succeed.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        account_data = LowiAccountData(account=LowiAccountSummary(), lines={})
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=[LowiApiAuthenticationError("expired"), account_data],
+            ) as fetch_mock,
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                return_value=None,
+            ) as reauth_mock,
+        ):
+            result = await client.async_get_account_data()
+    finally:
+        await session.close()
+
+    assert result is account_data
+    assert fetch_mock.call_count == 2
+    reauth_mock.assert_called_once()
+
+
+async def test_get_account_data_raises_when_silent_reauth_does_not_help() -> None:
+    """
+    A still-failing retry after silent reauth surfaces the real auth error.
+
+    This means the Keycloak SSO session itself has expired (not just the
+    short-lived portal session), so the caller must fall back to Home
+    Assistant's interactive reauth rather than retrying forever.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(client, "_async_silent_reauth", return_value=None),
+            pytest.raises(LowiApiAuthenticationError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_get_account_data_waf_during_silent_reauth_propagates() -> None:
+    """
+    A WAF challenge during the silent-refresh attempt isn't masked as an auth error.
+
+    Mirrors the coordinator-level invariant (test_waf_challenge_does_not_trigger_reauth)
+    one layer down: a WAF block must never be conflated with "needs reauth".
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                side_effect=LowiApiWafChallengeError("blocked"),
+            ),
+            pytest.raises(LowiApiWafChallengeError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_get_account_data_falls_back_to_reauth_on_silent_reauth_loop() -> None:
+    """
+    A redirect loop during the silent refresh becomes an auth failure, not a comms error.
+
+    A Keycloak redirect loop surfaces from _async_silent_reauth() as a
+    LowiApiCommunicationError. If that propagated as-is, the coordinator would
+    treat a permanently-broken refresh as a transient network blip and keep
+    retrying forever without ever prompting the user. It must instead fall
+    back to interactive reauth, i.e. surface the original auth failure.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        with (
+            patch.object(
+                client,
+                "_async_fetch_account_data",
+                side_effect=LowiApiAuthenticationError("expired"),
+            ),
+            patch.object(
+                client,
+                "_async_silent_reauth",
+                side_effect=LowiApiCommunicationError("Redirect loop"),
+            ),
+            pytest.raises(LowiApiAuthenticationError),
+        ):
+            await client.async_get_account_data()
+    finally:
+        await session.close()
+
+
+async def test_async_silent_reauth_clears_transient_flow_cookies(
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """
+    Stale per-flow cookies are dropped before the silent refresh; SSO identity is kept.
+
+    Replaying a dead portal `sessionid` or Keycloak's KC_RESTART/
+    AUTH_SESSION_ID was observed to send the silent refresh into an infinite
+    redirect loop. Those transient tokens must be cleared first, while the
+    durable SSO identity (KEYCLOAK_IDENTITY/KEYCLOAK_SESSION) must survive so
+    the refresh still has an SSO session to ride.
+    """
+    aioclient_mock.get(_ENTRY_URL, text="<html>portal</html>")
+    client, session = _client_from_mocker(aioclient_mock)
+    try:
+        client.import_cookies({"sessionid": "stale-portal-session"})
+        client.import_sso_cookies(
+            {
+                "KC_RESTART": "stale-restart-token",
+                "AUTH_SESSION_ID": "stale-auth-session",
+                "KEYCLOAK_IDENTITY": "durable-sso-identity",
+                "KEYCLOAK_SESSION": "durable-sso-session",
+            },
+        )
+
+        await client._async_silent_reauth()
+
+        assert "sessionid" not in client.export_cookies()
+        sso_after = client.export_sso_cookies()
+        assert "KC_RESTART" not in sso_after
+        assert "AUTH_SESSION_ID" not in sso_after
+        assert sso_after.get("KEYCLOAK_IDENTITY") == "durable-sso-identity"
+        assert sso_after.get("KEYCLOAK_SESSION") == "durable-sso-session"
+    finally:
+        await session.close()
+
+
 async def test_communication_error_on_transport_failure() -> None:
     """A transport-level failure is surfaced as a communication error."""
     session = aiohttp.ClientSession()
@@ -369,6 +566,53 @@ async def test_export_import_cookies_roundtrip() -> None:
             fresh_client = LowiApiClient("12345678A", "test-password", fresh_session)
             fresh_client.import_cookies(cookies)
             assert fresh_client.export_cookies().get("sessionid") == "abc123"
+        finally:
+            await fresh_session.close()
+    finally:
+        await session.close()
+
+
+async def test_export_import_sso_cookies_roundtrip() -> None:
+    """
+    SSO cookies exported from one client can restore a session on another.
+
+    Seeded at _KEYCLOAK_REALM_URL (.../realms/milowi/), matching how Keycloak
+    actually scopes these cookies via a Path attribute - a regression test
+    for a bug where filtering against the bare host (KEYCLOAK_BASE_URL, no
+    path) silently excluded them from export_sso_cookies(), so persisted SSO
+    cookies never actually survived a restart even though the live in-memory
+    session kept working.
+    """
+    session = aiohttp.ClientSession()
+    try:
+        client = LowiApiClient("12345678A", "test-password", session)
+        session.cookie_jar.update_cookies(
+            {"KEYCLOAK_IDENTITY": "sso-token"},
+            response_url=URL(_KEYCLOAK_REALM_URL),
+        )
+
+        cookies = client.export_sso_cookies()
+        assert cookies.get("KEYCLOAK_IDENTITY") == "sso-token"
+        # The portal (www.lowi.es) export must not pick up SSO-host cookies.
+        assert "KEYCLOAK_IDENTITY" not in client.export_cookies()
+        # Regression check: filtering from the bare host (the old, buggy
+        # behavior) can't see a realm-path-scoped cookie - proving the
+        # realm-scoped path is what actually makes export_sso_cookies() work.
+        bare_host_cookies = {
+            name: morsel.value
+            for name, morsel in session.cookie_jar.filter_cookies(
+                URL(KEYCLOAK_BASE_URL),
+            ).items()
+        }
+        assert "KEYCLOAK_IDENTITY" not in bare_host_cookies
+
+        fresh_session = aiohttp.ClientSession()
+        try:
+            fresh_client = LowiApiClient("12345678A", "test-password", fresh_session)
+            fresh_client.import_sso_cookies(cookies)
+            assert fresh_client.export_sso_cookies().get("KEYCLOAK_IDENTITY") == (
+                "sso-token"
+            )
         finally:
             await fresh_session.close()
     finally:
